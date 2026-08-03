@@ -1,0 +1,123 @@
+Metadata-Version: 2.4
+Name: backend2
+Version: 0.1.0
+Summary: FastAPI OCR service for lab and vital trend analytics
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi==0.116.1
+Requires-Dist: uvicorn[standard]==0.35.0
+Requires-Dist: sqlalchemy==2.0.43
+Requires-Dist: psycopg[binary]<3.4,>=3.2.10
+Requires-Dist: alembic==1.16.4
+Requires-Dist: pydantic-settings==2.10.1
+Requires-Dist: python-multipart==0.0.20
+Requires-Dist: pytesseract==0.3.13
+Requires-Dist: Pillow==11.3.0
+Requires-Dist: pypdf==5.9.0
+Requires-Dist: pypdfium2==4.30.0
+Requires-Dist: minio==7.2.11
+Requires-Dist: httpx==0.25.2
+Provides-Extra: dev
+Requires-Dist: ruff==0.12.11; extra == "dev"
+Requires-Dist: mypy==1.17.1; extra == "dev"
+Provides-Extra: triage
+Requires-Dist: numpy<3,>=1.26; extra == "triage"
+Requires-Dist: scikit-learn<2,>=1.4; extra == "triage"
+Requires-Dist: sentence-transformers<4,>=3.0; extra == "triage"
+
+# Backend2 API
+
+FastAPI backend for OCR-based extraction and trend analytics for:
+
+- Lipid profile: total cholesterol, LDL, HDL, triglycerides
+- Blood pressure (systolic/diastolic)
+- Heart rate
+- Oxygen saturation (SpO2)
+
+The service supports report OCR ingestion and manual metric entry for patient trend graphs.
+
+## Stack
+
+- FastAPI
+- Tesseract OCR (via pytesseract)
+- PostgreSQL (SQLAlchemy + Alembic)
+
+## 1) Setup
+
+1. Install Python 3.11+
+2. Install Tesseract OCR and ensure it is in PATH (or set `TESSERACT_CMD`)
+3. Create database in PostgreSQL: `lab_analytics`
+4. Copy `.env.example` to `.env` and update values
+
+## 2) Install
+
+```bash
+pip install -e .
+```
+
+## 3) Migrate DB
+
+```bash
+alembic upgrade head
+```
+
+## 4) Run
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
+```
+
+## API
+
+- `POST /api/v1/patients/{patient_id}/reports/upload`
+  - multipart form-data: file + optional `reported_at` (ISO datetime)
+  - runs OCR + parsing + stores report and measurements
+- `POST /api/v1/patients/{patient_id}/reports/ingest-drive`
+  - optional query: `folder_path`, `reported_at`
+  - scans a drive folder for supported report files (`.pdf`, `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, `.bmp`, `.webp`)
+  - runs OCR + parsing for each file and stores report metadata + extracted measurements in PostgreSQL
+- `POST /api/v1/patients/{patient_id}/reports/auto-ingest`
+  - json body: `documents` array with metadata (objectName, fileName, mimeType, issuedAt, uploadedAt)
+  - downloads documents from minio, runs OCR + parsing, stores measurements in PostgreSQL
+  - called by frontend when patient loads health analysis to auto-populate trend graphs
+- `GET /api/v1/patients/{patient_id}/trends`
+  - optional query: `metric`, `from_date`, `to_date`
+- `POST /api/v1/patients/{patient_id}/measurements/manual`
+  - json body: `metric_code`, `value`, optional `measured_at`, optional `unit`
+- `POST /api/v1/patient/ai-health-checker/suggestions`
+  - json body: `symptoms` + optional `conversation` array (`role`, `text`)
+  - returns follow-up question flow and final specialist recommendation
+- `GET /api/v1/patient/ai-health-checker/status`
+  - checks local Ollama model availability and active inference source
+
+## AI doctor suggestion setup
+
+This module reuses the prompt from `../ai/SYSTEM_PROMPT.txt` and runs on local Ollama by default. You can also switch it to Groq's OpenAI-compatible API if you want hosted inference without a local GPU.
+
+Optional environment variables:
+
+- `AI_CONVERSATION_PROVIDER` (default: `ollama`, set to `groq` to use Groq)
+- `AI_CONVERSATION_OLLAMA_URL` (default: `http://127.0.0.1:11434/api/chat`)
+- `AI_CONVERSATION_OLLAMA_MODEL` (default: `llama3:8b`)
+- `AI_CONVERSATION_GROQ_API_KEY` (required when `AI_CONVERSATION_PROVIDER=groq`)
+- `AI_CONVERSATION_GROQ_MODEL` (default: `llama-3.3-70b-versatile`)
+- `AI_CONVERSATION_GROQ_BASE_URL` (default: `https://api.groq.com/openai/v1`)
+- `AI_CONVERSATION_SYSTEM_PROMPT_PATH` (default: `../ai/SYSTEM_PROMPT.txt`)
+- `AI_CONVERSATION_TIMEOUT_SECONDS` (default: `25.0`)
+
+Groq is called through the same chat-completions message format as OpenAI-compatible APIs, so the triage prompt and JSON response contract stay unchanged.
+
+## Triage LLM setup
+
+The triage endpoint uses `LLM_PROVIDER` and OpenAI-compatible settings:
+
+- `LLM_PROVIDER` (default: `openai`; supported: `openai`, `anthropic`, `gemini`)
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL` (default: `https://api.openai.com/v1`)
+- `OPENAI_MODEL` (default: `gpt-4o-mini`)
+
+If you use a Groq key (`gsk_...`) in `OPENAI_API_KEY`, the backend now auto-routes to Groq's OpenAI-compatible URL and a compatible default model.
+
+The trend endpoint always reads from the persisted `measurements` table, so OCR-extracted data remains available for permanent graphing.
+
+Swagger docs: `http://localhost:8010/docs`
